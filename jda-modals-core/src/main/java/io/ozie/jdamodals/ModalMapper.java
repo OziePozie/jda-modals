@@ -3,12 +3,23 @@ package io.ozie.jdamodals;
 import io.ozie.jdamodals.annotation.Attachment;
 import io.ozie.jdamodals.annotation.Modal;
 import io.ozie.jdamodals.annotation.NestedModal;
+import io.ozie.jdamodals.annotation.SelectMenu;
+import io.ozie.jdamodals.annotation.SelectMenuType;
+import io.ozie.jdamodals.annotation.SelectOption;
 import io.ozie.jdamodals.annotation.TextInput;
 import io.ozie.jdamodals.exception.ModalMappingException;
 import io.ozie.jdamodals.session.ModalSession;
 import net.dv8tion.jda.api.components.attachmentupload.AttachmentUpload;
 import net.dv8tion.jda.api.components.label.Label;
+import net.dv8tion.jda.api.components.selections.EntitySelectMenu;
+import net.dv8tion.jda.api.components.selections.StringSelectMenu;
+import net.dv8tion.jda.api.entities.IMentionable;
+import net.dv8tion.jda.api.entities.Member;
 import net.dv8tion.jda.api.entities.Message;
+import net.dv8tion.jda.api.entities.Role;
+import net.dv8tion.jda.api.entities.User;
+import net.dv8tion.jda.api.entities.channel.middleman.GuildChannel;
+import net.dv8tion.jda.api.entities.emoji.Emoji;
 import net.dv8tion.jda.api.events.interaction.ModalInteractionEvent;
 import net.dv8tion.jda.api.interactions.modals.ModalMapping;
 
@@ -21,6 +32,8 @@ import java.util.*;
  * Supports nested modal models for composition and reuse.
  */
 public class ModalMapper {
+
+    private static final int MAX_COMPONENTS_PER_MODAL = 5;
 
     /**
      * Builds a JDA Modal from a ModalModel class (single-step or first step of wizard).
@@ -55,6 +68,13 @@ public class ModalMapper {
 
         List<FieldComponent> components = collectComponentsForStep(clazz, step, "", 0);
         components.sort(Comparator.comparingInt(FieldComponent::order));
+
+        if (components.size() > MAX_COMPONENTS_PER_MODAL) {
+            throw new ModalMappingException(
+                    "Modal '" + modalAnnotation.id() + "' step " + step + " has " + components.size() +
+                    " components, but Discord allows maximum " + MAX_COMPONENTS_PER_MODAL +
+                    ". Consider splitting into multiple steps.");
+        }
 
         for (FieldComponent fc : components) {
             builder.addComponents(fc.labeled());
@@ -217,6 +237,11 @@ public class ModalMapper {
             return attachment.step();
         }
 
+        SelectMenu selectMenu = field.getAnnotation(SelectMenu.class);
+        if (selectMenu != null) {
+            return selectMenu.step();
+        }
+
         return 0;
     }
 
@@ -305,6 +330,7 @@ public class ModalMapper {
             } else {
                 TextInput textInput = field.getAnnotation(TextInput.class);
                 Attachment attachment = field.getAnnotation(Attachment.class);
+                SelectMenu selectMenu = field.getAnnotation(SelectMenu.class);
 
                 if (textInput != null) {
                     int effectiveStep = textInput.step() + stepOffset;
@@ -315,6 +341,11 @@ public class ModalMapper {
                     int effectiveStep = attachment.step() + stepOffset;
                     if (effectiveStep == targetStep) {
                         components.add(createAttachmentComponent(field, attachment, prefix));
+                    }
+                } else if (selectMenu != null) {
+                    int effectiveStep = selectMenu.step() + stepOffset;
+                    if (effectiveStep == targetStep) {
+                        components.add(createSelectMenuComponent(field, selectMenu, prefix));
                     }
                 }
             }
@@ -364,6 +395,74 @@ public class ModalMapper {
         return new FieldComponent(
                 annotation.order(),
                 Label.of(annotation.label(), attachmentUpload)
+        );
+    }
+
+    private FieldComponent createSelectMenuComponent(Field field, SelectMenu annotation, String prefix) {
+        String baseId = annotation.id().isEmpty() ? field.getName() : annotation.id();
+        String id = prefix.isEmpty() ? baseId : prefix + "_" + baseId;
+
+        net.dv8tion.jda.api.components.selections.SelectMenu selectMenu;
+
+        if (annotation.type() == SelectMenuType.STRING) {
+            var builder = StringSelectMenu.create(id)
+                    .setRequiredRange(annotation.minValues(), annotation.maxValues());
+
+            if (!annotation.placeholder().isEmpty()) {
+                builder.setPlaceholder(annotation.placeholder());
+            }
+
+            for (SelectOption option : annotation.options()) {
+                var optionBuilder = net.dv8tion.jda.api.components.selections.SelectOption
+                        .of(option.label(), option.value());
+
+                if (!option.description().isEmpty()) {
+                    optionBuilder = optionBuilder.withDescription(option.description());
+                }
+
+                if (!option.emoji().isEmpty()) {
+                    optionBuilder = optionBuilder.withEmoji(Emoji.fromFormatted(option.emoji()));
+                }
+
+                if (option.isDefault()) {
+                    optionBuilder = optionBuilder.withDefault(true);
+                }
+
+                builder.addOptions(optionBuilder);
+            }
+
+            selectMenu = builder.build();
+        } else {
+            EntitySelectMenu.SelectTarget target = switch (annotation.type()) {
+                case USER -> EntitySelectMenu.SelectTarget.USER;
+                case ROLE -> EntitySelectMenu.SelectTarget.ROLE;
+                case CHANNEL -> EntitySelectMenu.SelectTarget.CHANNEL;
+                case MENTIONABLE -> EntitySelectMenu.SelectTarget.USER;
+                default -> throw new ModalMappingException("Unknown SelectMenuType: " + annotation.type());
+            };
+
+            var builder = EntitySelectMenu.create(id, target);
+
+            if (annotation.type() == SelectMenuType.MENTIONABLE) {
+                builder = EntitySelectMenu.create(id, EntitySelectMenu.SelectTarget.USER, EntitySelectMenu.SelectTarget.ROLE);
+            }
+
+            builder.setRequiredRange(annotation.minValues(), annotation.maxValues());
+
+            if (!annotation.placeholder().isEmpty()) {
+                builder.setPlaceholder(annotation.placeholder());
+            }
+
+            if (annotation.type() == SelectMenuType.CHANNEL && annotation.channelTypes().length > 0) {
+                builder.setChannelTypes(annotation.channelTypes());
+            }
+
+            selectMenu = builder.build();
+        }
+
+        return new FieldComponent(
+                annotation.order(),
+                Label.of(annotation.label(), selectMenu)
         );
     }
 
@@ -446,7 +545,9 @@ public class ModalMapper {
     }
 
     private boolean hasInputAnnotation(Field field) {
-        return field.isAnnotationPresent(TextInput.class) || field.isAnnotationPresent(Attachment.class);
+        return field.isAnnotationPresent(TextInput.class)
+                || field.isAnnotationPresent(Attachment.class)
+                || field.isAnnotationPresent(SelectMenu.class);
     }
 
     private Object extractFieldValue(ModalInteractionEvent event, Field field, String prefix) {
@@ -458,6 +559,11 @@ public class ModalMapper {
         Attachment attachment = field.getAnnotation(Attachment.class);
         if (attachment != null) {
             return extractAttachmentValue(event, field, attachment, prefix);
+        }
+
+        SelectMenu selectMenu = field.getAnnotation(SelectMenu.class);
+        if (selectMenu != null) {
+            return extractSelectMenuValue(event, field, selectMenu, prefix);
         }
 
         return null;
@@ -506,6 +612,53 @@ public class ModalMapper {
         }
 
         return null;
+    }
+
+    private Object extractSelectMenuValue(ModalInteractionEvent event, Field field, SelectMenu annotation, String prefix) {
+        String baseId = annotation.id().isEmpty() ? field.getName() : annotation.id();
+        String id = prefix.isEmpty() ? baseId : prefix + "_" + baseId;
+        ModalMapping mapping = event.getValue(id);
+
+        if (mapping == null) {
+            return null;
+        }
+
+        Class<?> type = field.getType();
+        boolean isList = List.class.isAssignableFrom(type);
+
+        return switch (annotation.type()) {
+            case STRING -> {
+                List<String> values = mapping.getAsStringList();
+                yield isList ? values : (values.isEmpty() ? null : values.getFirst());
+            }
+            case USER -> {
+                List<User> users = mapping.getAsMentions().getUsers();
+                if (isList) {
+                    yield users;
+                } else if (type == User.class) {
+                    yield users.isEmpty() ? null : users.getFirst();
+                } else if (type == Member.class || Member.class.isAssignableFrom(type)) {
+                    List<Member> members = mapping.getAsMentions().getMembers();
+                    yield members.isEmpty() ? null : members.getFirst();
+                }
+                yield users.isEmpty() ? null : users.getFirst();
+            }
+            case ROLE -> {
+                List<Role> roles = mapping.getAsMentions().getRoles();
+                yield isList ? roles : (roles.isEmpty() ? null : roles.getFirst());
+            }
+            case CHANNEL -> {
+                List<GuildChannel> channels = mapping.getAsMentions().getChannels();
+                yield isList ? channels : (channels.isEmpty() ? null : channels.getFirst());
+            }
+            case MENTIONABLE -> {
+                var mentions = mapping.getAsMentions();
+                List<IMentionable> mentionables = new ArrayList<>();
+                mentionables.addAll(mentions.getUsers());
+                mentionables.addAll(mentions.getRoles());
+                yield isList ? mentionables : (mentionables.isEmpty() ? null : mentionables.getFirst());
+            }
+        };
     }
 
     private record FieldComponent(int order, Label labeled) {}

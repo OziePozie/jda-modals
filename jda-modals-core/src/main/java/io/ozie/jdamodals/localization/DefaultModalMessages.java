@@ -1,4 +1,4 @@
-package io.ozie.jdamodals.i18n;
+package io.ozie.jdamodals.localization;
 
 import java.text.MessageFormat;
 import java.util.Locale;

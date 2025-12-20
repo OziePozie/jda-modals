@@ -1,7 +1,7 @@
 package io.ozie.jdamodals;
 
-import io.ozie.jdamodals.i18n.DefaultModalMessages;
-import io.ozie.jdamodals.i18n.ModalMessages;
+import io.ozie.jdamodals.localization.DefaultModalMessages;
+import io.ozie.jdamodals.localization.ModalMessages;
 import io.ozie.jdamodals.session.ModalSession;
 import io.ozie.jdamodals.session.ModalSessionStorage;
 import net.dv8tion.jda.api.components.actionrow.ActionRow;

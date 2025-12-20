@@ -1,7 +1,7 @@
 package io.ozie.jdamodals.spring.autoconfigure;
 
-import io.ozie.jdamodals.i18n.DefaultModalMessages;
-import io.ozie.jdamodals.i18n.ModalMessages;
+import io.ozie.jdamodals.localization.DefaultModalMessages;
+import io.ozie.jdamodals.localization.ModalMessages;
 import org.springframework.context.MessageSource;
 import org.springframework.context.NoSuchMessageException;
 
