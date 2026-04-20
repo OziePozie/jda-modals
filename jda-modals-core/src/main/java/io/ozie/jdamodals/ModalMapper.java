@@ -1,6 +1,7 @@
 package io.ozie.jdamodals;
 
 import io.ozie.jdamodals.annotation.Attachment;
+import io.ozie.jdamodals.annotation.ConditionalStep;
 import io.ozie.jdamodals.annotation.Modal;
 import io.ozie.jdamodals.annotation.NestedModal;
 import io.ozie.jdamodals.annotation.SelectMenu;
@@ -173,6 +174,98 @@ public class ModalMapper {
      */
     public int getFieldCountForStep(Class<?> clazz, int step) {
         return collectComponentsForStep(clazz, step, "", 0).size();
+    }
+
+    /**
+     * Resolves the next step to show after the current step, evaluating {@link ConditionalStep}
+     * annotations against session data. Skips steps whose conditions are not met.
+     *
+     * @param session     the current session with collected values
+     * @param currentStep the step that was just completed
+     * @param totalSteps  the total number of defined steps
+     * @return the next step to show, or a value {@code > totalSteps} if all remaining steps should be skipped
+     */
+    public int resolveNextStep(ModalSession session, int currentStep, int totalSteps) {
+        for (int candidate = currentStep + 1; candidate <= totalSteps; candidate++) {
+            if (isStepConditionMet(session.getModalClass(), candidate, session)) {
+                return candidate;
+            }
+        }
+        return totalSteps + 1;
+    }
+
+    /**
+     * Checks whether a step's conditions are met based on the current session values.
+     * A step with no {@link ConditionalStep} annotations is always shown.
+     * A step with conditions is shown only if ALL conditions are satisfied.
+     */
+    public boolean isStepConditionMet(Class<?> clazz, int step, ModalSession session) {
+        List<ConditionalStep> conditions = collectConditionsForStep(clazz, step, "", 0);
+        if (conditions.isEmpty()) {
+            return true;
+        }
+        return conditions.stream().allMatch(cond -> evaluateCondition(cond, session));
+    }
+
+    /**
+     * Checks if a modal class has any conditional steps.
+     */
+    public boolean hasConditionalSteps(Class<?> clazz) {
+        for (Field field : clazz.getDeclaredFields()) {
+            if (field.isAnnotationPresent(ConditionalStep.class)) {
+                return true;
+            }
+            NestedModal nested = field.getAnnotation(NestedModal.class);
+            if (nested != null && hasConditionalSteps(field.getType())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private List<ConditionalStep> collectConditionsForStep(Class<?> clazz, int targetStep, String prefix, int stepOffset) {
+        List<ConditionalStep> conditions = new ArrayList<>();
+        int currentOffset = stepOffset;
+
+        List<Field> fields = getSortedFields(clazz);
+
+        for (Field field : fields) {
+            NestedModal nested = field.getAnnotation(NestedModal.class);
+
+            if (nested != null) {
+                String nestedPrefix = prefix.isEmpty() ? nested.prefix() : prefix + "_" + nested.prefix();
+                int nestedMaxStep = getMaxStepForClass(field.getType());
+                conditions.addAll(collectConditionsForStep(field.getType(), targetStep, nestedPrefix, currentOffset));
+                currentOffset += nestedMaxStep;
+            } else {
+                int fieldStep = getFieldStep(field);
+                if (fieldStep > 0 && (fieldStep + stepOffset) == targetStep) {
+                    ConditionalStep condition = field.getAnnotation(ConditionalStep.class);
+                    if (condition != null) {
+                        conditions.add(condition);
+                    }
+                }
+            }
+        }
+
+        return conditions;
+    }
+
+    private boolean evaluateCondition(ConditionalStep condition, ModalSession session) {
+        Object rawValue = session.getFieldValue(condition.dependsOn());
+        String actualValue = rawValue != null ? rawValue.toString() : null;
+
+        boolean matches = false;
+        if (actualValue != null) {
+            for (String expected : condition.havingValue()) {
+                if (expected.equals(actualValue)) {
+                    matches = true;
+                    break;
+                }
+            }
+        }
+
+        return condition.negate() != matches;
     }
 
     private Modal getModalAnnotation(Class<?> clazz) {

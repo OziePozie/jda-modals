@@ -50,6 +50,15 @@ public class ModalSession {
         }
     }
 
+    /**
+     * Jumps directly to the specified step (used for conditional branching).
+     *
+     * @param step the step number to jump to (1-based)
+     */
+    public void setCurrentStep(int step) {
+        this.currentStep = step;
+    }
+
     public boolean isLastStep() {
         return currentStep >= totalSteps;
     }

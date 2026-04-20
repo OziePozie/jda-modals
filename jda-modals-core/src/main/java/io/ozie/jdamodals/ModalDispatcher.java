@@ -161,9 +161,10 @@ public class ModalDispatcher {
 
             mapper.mapStepToSession(event, session, currentStep);
 
-            if (currentStep < totalSteps) {
-                int nextStep = currentStep + 1;
-                session.nextStep();
+            int nextStep = resolveNextStep(handler, session, currentStep, totalSteps);
+
+            if (nextStep <= totalSteps) {
+                session.setCurrentStep(nextStep);
 
                 Locale locale = toLocale(event.getUserLocale());
                 String buttonId = CONTINUE_BUTTON_PREFIX + baseModalId + ":" + nextStep;
@@ -176,16 +177,16 @@ public class ModalDispatcher {
                         .setEphemeral(true)
                         .queue();
 
-                log.debug("User {} completed step {}/{} of modal '{}', waiting for continue",
-                        userId, currentStep, totalSteps, baseModalId);
+                log.debug("User {} completed step {}/{} of modal '{}', next step: {}",
+                        userId, currentStep, totalSteps, baseModalId, nextStep);
             } else {
                 T modal = mapper.mapFromSession(session);
                 handler.handle(event, modal);
 
                 sessionStorage.removeSession(userId, baseModalId);
 
-                log.debug("User {} completed modal '{}' ({} steps)",
-                        userId, baseModalId, totalSteps);
+                log.debug("User {} completed modal '{}' (finished at step {}/{})",
+                        userId, baseModalId, currentStep, totalSteps);
             }
         } catch (Exception e) {
             log.error("Error handling multi-step modal '{}' step {}: {}",
@@ -193,6 +194,18 @@ public class ModalDispatcher {
             sessionStorage.removeSession(userId, baseModalId);
             replyWithError(event);
         }
+    }
+
+    /**
+     * Resolves the next step using the handler's {@link StepResolver} if available,
+     * otherwise falls back to annotation-based {@link io.ozie.jdamodals.annotation.ConditionalStep} evaluation.
+     */
+    private int resolveNextStep(ModalHandler<?> handler, ModalSession session, int currentStep, int totalSteps) {
+        StepResolver resolver = handler.getStepResolver();
+        if (resolver != null) {
+            return resolver.resolveNextStep(session, currentStep, totalSteps);
+        }
+        return mapper.resolveNextStep(session, currentStep, totalSteps);
     }
 
     private void replyWithError(ModalInteractionEvent event) {
